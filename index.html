@@ -8,6 +8,159 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="theme-color" content="#0C447C"/>
 <title>SwiftWorks Finance</title>
+
+<!-- Firebase SDKs (ESM via CDN) -->
+<script type="module">
+import { initializeApp }        from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+                                 from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot }
+                                 from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBRjH-WrMAktHiGDjWn3r1YEffWEErvcrg",
+  authDomain: "swiftworks-finance.firebaseapp.com",
+  projectId: "swiftworks-finance",
+  storageBucket: "swiftworks-finance.firebasestorage.app",
+  messagingSenderId: "1093275159369",
+  appId: "1:1093275159369:web:6caf32024a9ee28bba2898"
+};
+
+const fbApp  = initializeApp(firebaseConfig);
+const auth   = getAuth(fbApp);
+const db     = getFirestore(fbApp);
+
+let _syncTimer = null;
+let _unsub     = null;
+const LS_KEY   = 'swf2026v2';
+const LS_TS    = 'swf2026v2_ts';
+
+/* ── helpers ── */
+function getLocalTs(){ return parseInt(localStorage.getItem(LS_TS)||'0'); }
+function setLocalTs(){ localStorage.setItem(LS_TS, String(Date.now())); }
+
+/* ── push local state → Firestore ── */
+async function pushState(){
+  const uid = auth.currentUser?.uid; if(!uid) return;
+  try{
+    const raw = localStorage.getItem(LS_KEY);
+    if(!raw) return;
+    const ref = doc(db,'users',uid,'data','appState');
+    await setDoc(ref,{ payload: raw, ts: Date.now() });
+    setLocalTs();
+    _setSyncBadge('☁️ Saved','ok');
+  }catch(e){ _setSyncBadge('Save failed','err'); console.error(e); }
+}
+
+/* ── schedule a debounced push (called by the app after every save) ── */
+window._fbSchedulePush = () => {
+  clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(pushState, 1800);
+  _setSyncBadge('…','pending');
+};
+
+/* ── subscribe to Firestore and merge if remote is newer ── */
+function subscribeFirestore(uid){
+  if(_unsub){ _unsub(); _unsub=null; }
+  const ref = doc(db,'users',uid,'data','appState');
+  _unsub = onSnapshot(ref, snap => {
+    if(!snap.exists()) { pushState(); return; }          // first time: upload local
+    const remote = snap.data();
+    if((remote.ts||0) > getLocalTs()){
+      // remote is newer → load it
+      try{
+        localStorage.setItem(LS_KEY, remote.payload);
+        setLocalTs();
+        if(typeof load === 'function') load();           // re-run app's load()
+        _setSyncBadge('☁️ Synced','ok');
+      }catch(e){ console.error('merge error',e); }
+    }
+  }, err => { _setSyncBadge('Sync error','err'); console.error(err); });
+}
+
+/* ── auth state ── */
+onAuthStateChanged(auth, user => {
+  if(user){
+    _showUser(user);
+    subscribeFirestore(user.uid);
+  } else {
+    _showSignedOut();
+    if(_unsub){ _unsub(); _unsub=null; }
+  }
+});
+
+/* ── exposed to inline buttons ── */
+window._fbSignIn  = async () => {
+  try{ await signInWithPopup(auth, new GoogleAuthProvider()); }
+  catch(e){ alert('Sign-in failed: '+e.message); }
+};
+window._fbSignOut = async () => {
+  if(_unsub){ _unsub(); _unsub=null; }
+  await signOut(auth);
+};
+
+/* ── auth bar UI ── */
+function _showUser(user){
+  document.getElementById('fb-signout-row').style.display='flex';
+  document.getElementById('fb-signin-row').style.display='none';
+  document.getElementById('fb-btn-signin').style.display='none';
+  document.getElementById('fb-btn-signout').style.display='';
+  document.getElementById('fb-user-name').textContent = user.displayName||user.email;
+  const av = document.getElementById('fb-avatar');
+  if(user.photoURL){ av.src=user.photoURL; av.style.display='inline-block'; }
+  else av.style.display='none';
+  _setSyncBadge('Ready','ok');
+}
+function _showSignedOut(){
+  document.getElementById('fb-signout-row').style.display='none';
+  document.getElementById('fb-signin-row').style.display='flex';
+  document.getElementById('fb-btn-signin').style.display='';
+  document.getElementById('fb-btn-signout').style.display='none';
+  _setSyncBadge('','');
+}
+function _setSyncBadge(msg,type){
+  const el=document.getElementById('fb-sync-badge');
+  if(!el) return;
+  el.textContent=msg;
+  el.className='fb-sync-badge '+(type||'');
+}
+</script>
+
+<style>
+/* ── Auth bar ── */
+#fb-auth-bar{
+  display:flex;align-items:center;justify-content:space-between;
+  background:#09355F;color:#fff;padding:8px 14px;
+  font-size:12px;font-family:-apple-system,'Segoe UI',sans-serif;
+  flex-shrink:0;gap:8px;
+}
+#fb-auth-bar img#fb-avatar{
+  width:24px;height:24px;border-radius:50%;
+  border:1.5px solid rgba(255,255,255,0.4);
+  object-fit:cover;vertical-align:middle;margin-right:5px;
+}
+#fb-signout-row,#fb-signin-row{display:flex;align-items:center;gap:8px;flex:1;min-width:0;}
+#fb-user-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
+.fb-sync-badge{font-size:11px;opacity:.75;transition:opacity .3s;}
+.fb-sync-badge.err{color:#FFAB91;opacity:1;}
+.fb-sync-badge.pending{opacity:.5;}
+.fb-signin-btn{
+  display:flex;align-items:center;gap:6px;
+  background:#fff;color:#09355F;
+  border:none;border-radius:18px;padding:5px 13px;
+  font-size:12px;font-weight:700;cursor:pointer;
+  transition:transform .15s;white-space:nowrap;flex-shrink:0;
+}
+.fb-signin-btn:active{transform:scale(0.96);}
+.fb-signout-btn{
+  background:rgba(255,255,255,.15);color:#fff;
+  border:1px solid rgba(255,255,255,.3);border-radius:14px;
+  padding:4px 10px;font-size:11px;font-weight:600;cursor:pointer;
+  white-space:nowrap;flex-shrink:0;
+}
+.fb-signout-btn:active{background:rgba(255,255,255,.28);}
+</style>
+
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
@@ -20,8 +173,8 @@
   --text:#1a1a2e;--text2:#6B7280;--text3:#9CA3AF;
   --radius:14px;--radius-sm:10px;
 }
-html,body{height:100%;background:var(--bg);font-family:-apple-system,'Segoe UI',sans-serif;color:var(--text);overflow:hidden}
-.app{display:flex;flex-direction:column;height:100vh;height:100dvh;max-width:480px;margin:0 auto}
+html,body{height:100%;background:var(--bg);font-family:-apple-system,'Segoe UI',sans-serif;color:var(--text);overflow:hidden;display:flex;flex-direction:column;}
+.app{display:flex;flex-direction:column;flex:1;min-height:0;max-width:480px;margin:0 auto;width:100%}
 .header{background:var(--blue);padding:44px 20px 16px;color:#fff;flex-shrink:0}
 .app-name{font-size:13px;font-weight:600;opacity:0.7;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px}
 .balance-label{font-size:11px;opacity:0.65;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:3px}
@@ -88,16 +241,6 @@ input::placeholder{color:var(--text3)}
 .filter-bar label{font-size:11px;font-weight:600;color:var(--text2);white-space:nowrap;text-transform:uppercase;letter-spacing:0.5px}
 .filter-bar select{margin-bottom:0;flex:1;font-size:13px;padding:6px 9px}
 .filter-note{font-size:11px;color:var(--text3);margin-bottom:7px}
-.cat-chip{padding:5px 12px;border-radius:20px;font-size:12px;font-weight:500;border:1.5px solid var(--border);background:#fff;color:var(--text2);cursor:pointer;white-space:nowrap;flex-shrink:0}
-.cat-chip.active{background:var(--blue);color:#fff;border-color:var(--blue)}
-/* Checklist */
-.cl-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)}
-.cl-item:last-of-type{border-bottom:none}
-.cl-item input[type=checkbox]{width:18px;height:18px;accent-color:var(--green);cursor:pointer;flex-shrink:0;margin-bottom:0;border:none;padding:0}
-.cl-item-name{font-size:13px;font-weight:500;flex:1}
-.cl-item-amount{font-size:13px;font-weight:700;color:var(--red)}
-.cl-item.checked .cl-item-name{text-decoration:line-through;color:var(--text3)}
-.cl-item.checked .cl-item-amount{color:var(--green)}
 .month-total-row{display:flex;justify-content:space-between;padding:8px 0 0;border-top:1px solid var(--border);margin-top:7px}
 .month-total-label{font-size:12px;color:var(--text2);font-weight:600}
 .month-total-val{font-size:14px;font-weight:700;color:var(--red)}
@@ -164,126 +307,35 @@ input::placeholder{color:var(--text3)}
 .tag-loan{background:var(--purple-light);color:var(--purple)}
 .tag-rec{background:var(--blue-pale);color:var(--blue)}
 .divider{height:1px;background:var(--border);margin:10px 0}
-/* Auth UI */
-.auth-overlay{position:fixed;inset:0;background:var(--blue);z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;padding:30px}
-.auth-logo{font-size:16px;font-weight:700;letter-spacing:2px;opacity:0.7;text-transform:uppercase;margin-bottom:8px}
-.auth-title{font-size:28px;font-weight:700;margin-bottom:8px;text-align:center}
-.auth-sub{font-size:14px;opacity:0.7;text-align:center;margin-bottom:40px;line-height:1.6}
-.auth-btn{display:flex;align-items:center;gap:12px;background:#fff;color:#1a1a2e;border:none;border-radius:12px;padding:14px 24px;font-size:15px;font-weight:600;cursor:pointer;width:100%;max-width:320px;justify-content:center;box-shadow:0 4px 15px rgba(0,0,0,0.2)}
-.auth-btn img{width:22px;height:22px}
-.auth-btn:active{transform:scale(0.97)}
-.auth-loading{font-size:13px;opacity:0.6;margin-top:16px}
-.sync-indicator{position:fixed;top:8px;right:12px;font-size:10px;background:rgba(255,255,255,0.15);color:#fff;padding:3px 8px;border-radius:10px;z-index:50;display:none}
-.user-bar{background:rgba(0,0,0,0.2);border-radius:8px;padding:6px 10px;display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-.user-bar-name{font-size:11px;color:rgba(255,255,255,0.8)}
-.user-bar-btn{font-size:11px;color:rgba(255,255,255,0.6);background:none;border:none;cursor:pointer;text-decoration:underline}
 </style>
-<script type="module">
-  import{initializeApp}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-  import{getAuth,GoogleAuthProvider,signInWithPopup,signOut,onAuthStateChanged}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-  import{getFirestore,doc,setDoc,getDoc,onSnapshot}from'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-
-  const firebaseConfig={
-    apiKey:"AIzaSyBRjH-WrMAktHiGDjWn3r1YEffWEErvcrg",
-    authDomain:"swiftworks-finance.firebaseapp.com",
-    projectId:"swiftworks-finance",
-    storageBucket:"swiftworks-finance.firebasestorage.app",
-    messagingSenderId:"1093275159369",
-    appId:"1:1093275159369:web:6caf32024a9ee28bba2898"
-  };
-
-  const fbApp=initializeApp(firebaseConfig);
-  const auth=getAuth(fbApp);
-  const db=getFirestore(fbApp);
-  let currentUid=null;
-  let unsubSnapshot=null;
-
-  window.fbSignIn=async function(){
-    const btn=document.getElementById('auth-sign-btn');
-    if(btn){btn.disabled=true;btn.querySelector('span').textContent='Signing in...';}
-    try{
-      const provider=new GoogleAuthProvider();
-      await signInWithPopup(auth,provider);
-    }catch(e){
-      if(btn){btn.disabled=false;btn.querySelector('span').textContent='Sign in with Google';}
-      alert('Sign in failed: '+e.message);
-    }
-  };
-
-  window.fbSignOut=async function(){
-    if(unsubSnapshot){unsubSnapshot();unsubSnapshot=null;}
-    await signOut(auth);
-    currentUid=null;
-    document.getElementById('auth-overlay').style.display='flex';
-    document.getElementById('user-bar').style.display='none';
-  };
-
-  window.fbSave=async function(data){
-    if(!currentUid)return;
-    try{
-      const si=document.getElementById('sync-indicator');
-      if(si){si.style.display='block';si.textContent='Syncing...';}
-      await setDoc(doc(db,'users',currentUid),{data:JSON.stringify(data),updatedAt:Date.now()});
-      if(si){si.textContent='Synced ✓';setTimeout(()=>si.style.display='none',2000);}
-    }catch(e){console.error('Sync error',e);}
-  };
-
-  onAuthStateChanged(auth,async user=>{
-    const overlay=document.getElementById('auth-overlay');
-    const userBar=document.getElementById('user-bar');
-    const userName=document.getElementById('user-bar-name');
-    const userAction=document.getElementById('user-bar-action');
-    if(user){
-      currentUid=user.uid;
-      if(overlay)overlay.style.display='none';
-      if(userBar)userBar.style.display='flex';
-      if(userName)userName.textContent=user.displayName||user.email;
-      if(userAction){userAction.textContent='Sign out';userAction.onclick=window.fbSignOut;}
-      try{
-        const snap=await getDoc(doc(db,'users',currentUid));
-        if(snap.exists()){
-          const remote=JSON.parse(snap.data().data||'{}');
-          const local=JSON.parse(localStorage.getItem('swf2026v2')||'{}');
-          const useRemote=!local||snap.data().updatedAt>(local._savedAt||0);
-          if(useRemote){
-            remote._savedAt=snap.data().updatedAt;
-            localStorage.setItem('swf2026v2',JSON.stringify(remote));
-          }
-        }
-        window.load();
-      }catch(e){window.load();}
-      if(unsubSnapshot)unsubSnapshot();
-      unsubSnapshot=onSnapshot(doc(db,'users',currentUid),snap=>{
-        if(!snap.exists())return;
-        const remote=JSON.parse(snap.data().data||'{}');
-        const local=JSON.parse(localStorage.getItem('swf2026v2')||'{}');
-        if(snap.data().updatedAt>(local._savedAt||0)){
-          remote._savedAt=snap.data().updatedAt;
-          localStorage.setItem('swf2026v2',JSON.stringify(remote));
-          window.load();
-        }
-      });
-    }else{
-      currentUid=null;
-      if(overlay)overlay.style.display='none';
-      if(userBar)userBar.style.display='flex';
-      if(userName)userName.textContent='Not signed in';
-      if(userAction){userAction.textContent='Sign in with Google ›';userAction.onclick=window.fbSignIn;}
-      window.load();
-    }
-  });
-</script>
 </head>
 <body>
-<!-- Sync indicator -->
-<div class="sync-indicator" id="sync-indicator">Synced ✓</div>
+
+<!-- ── Firebase auth bar ───────────────────────────────────────── -->
+<div id="fb-auth-bar">
+  <!-- signed-in state -->
+  <div id="fb-signout-row" style="display:none">
+    <img id="fb-avatar" src="" alt="" style="display:none"/>
+    <span id="fb-user-name"></span>
+    <span class="fb-sync-badge" id="fb-sync-badge"></span>
+  </div>
+  <!-- signed-out state -->
+  <div id="fb-signin-row">
+    <span style="opacity:.7">Sign in to sync across devices</span>
+  </div>
+  <!-- right-side actions -->
+  <div style="flex-shrink:0">
+    <button class="fb-signin-btn"  id="fb-btn-signin"  onclick="window._fbSignIn()">
+      <svg width="14" height="14" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.29-8.16 2.29-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      Sign in with Google
+    </button>
+    <button class="fb-signout-btn" id="fb-btn-signout" onclick="window._fbSignOut()" style="display:none">Sign out</button>
+  </div>
+</div>
+
 <div class="app">
   <div class="header">
     <div class="app-name">SwiftWorks Finance</div>
-    <div class="user-bar" id="user-bar" style="display:flex">
-      <span class="user-bar-name" id="user-bar-name">Not signed in</span>
-      <button class="user-bar-btn" id="user-bar-action" onclick="window.fbSignIn()">Sign in with Google ›</button>
-    </div>
     <div class="balance-label">Remaining Balance <span id="balance-note" class="balance-note"></span></div>
     <div class="balance-amount" id="remaining">₨ 0</div>
     <div class="balance-chips">
@@ -380,7 +432,7 @@ input::placeholder{color:var(--text3)}
           <button class="btn btn-primary" onclick="saveManualCarryover()">Save</button>
           <button class="btn btn-cancel" onclick="clearManualCarryover()">Clear</button>
         </div>
-        <div id="manual-carryover-saved" style="display:none;margin-top:10px;background:var(--green-light);border-radius:8px;padding:8px 12px;justify-content:space-between;align-items:center">
+        <div id="manual-carryover-saved" style="display:none;margin-top:10px;background:var(--green-light);border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center">
           <div style="font-size:12px;color:var(--green);font-weight:600">Manual balance saved</div>
           <div style="font-size:14px;font-weight:700;color:var(--green)" id="manual-carryover-disp">₨ 0</div>
         </div>
@@ -388,12 +440,16 @@ input::placeholder{color:var(--text3)}
 
       <!-- Extra funds / credits -->
       <div class="card">
-        <div class="card-title">Extra funds & credits</div>
-        <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.5">Log one-off income like bonuses, refunds, gifts, or any extra payment received.</div>
-        <input type="text" id="credit-name" placeholder="Description (e.g. Bonus, Refund, Gift)"/>
-        <input type="number" id="credit-amount" placeholder="Amount in PKR" inputmode="numeric"/>
-        <button class="btn btn-primary" onclick="addCredit()">Add Credit</button>
-        <div id="credit-list" style="margin-top:12px"></div>
+        <div class="card-title">Add funds / credit</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px;line-height:1.5">Log any extra money that comes in — gifts, refunds, bonuses, sold items, or any other credit. It's added to your total funds for the month.</div>
+        <input type="text" id="fund-desc-input" placeholder="Description (e.g. Refund, Bonus, Gift)"/>
+        <input type="number" id="fund-amount-input" placeholder="Amount in PKR" inputmode="numeric"/>
+        <button class="btn btn-primary" onclick="addExtraFund()">Add Funds</button>
+        <div id="funds-list" style="margin-top:12px"><div class="empty">No extra funds logged yet</div></div>
+        <div class="total-row" style="margin-top:8px">
+          <div class="total-label">Total extra funds</div>
+          <div class="total-val" id="funds-total">₨ 0</div>
+        </div>
       </div>
 
       <!-- Month income history -->
@@ -414,41 +470,6 @@ input::placeholder{color:var(--text3)}
 
     <!-- EXPENSES -->
     <div class="section" id="tab-expenses">
-
-      <!-- Monthly fixed expenses checklist -->
-      <div class="card" id="checklist-card" style="padding:0;overflow:hidden">
-        <div onclick="toggleChecklist()" style="display:flex;justify-content:space-between;align-items:center;padding:12px 15px;cursor:pointer;user-select:none">
-          <div style="display:flex;align-items:center;gap:8px">
-            <span style="font-size:14px">📋</span>
-            <span style="font-size:13px;font-weight:600">Monthly fixed expenses</span>
-            <span class="badge" id="checklist-badge">0/0</span>
-          </div>
-          <span id="checklist-chevron" style="font-size:12px;color:var(--text3);transition:transform 0.2s">▼</span>
-        </div>
-        <div id="checklist-body" style="display:none;border-top:1px solid var(--border);padding:10px 15px">
-          <div id="checklist-items"></div>
-          <div id="checklist-empty" class="empty" style="padding:12px 0;display:none">No fixed expenses added yet</div>
-          <!-- Add new fixed expense -->
-          <div id="checklist-add-row" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px;display:none">
-            <div style="display:flex;gap:7px;margin-bottom:7px">
-              <input type="text" id="cl-name" placeholder="Name (e.g. Rent)" style="flex:1;margin-bottom:0;font-size:13px;padding:8px 10px"/>
-              <input type="number" id="cl-amount" placeholder="PKR" inputmode="numeric" style="width:100px;margin-bottom:0;font-size:13px;padding:8px 10px"/>
-            </div>
-            <div style="display:flex;gap:7px">
-              <div class="ac-wrap" style="flex:1;margin-bottom:0">
-                <input type="text" id="cl-cat" placeholder="Category" autocomplete="off" style="margin-bottom:0;font-size:13px;padding:8px 10px" oninput="clCatInput()" onfocus="clCatInput()" onkeydown="clCatKey(event)"/>
-                <div class="ac-list" id="cl-cat-list"></div>
-              </div>
-              <button onclick="addChecklistItem()" style="background:var(--blue);color:#fff;border:none;border-radius:var(--radius-sm);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">Add</button>
-            </div>
-          </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px">
-            <button onclick="toggleChecklistAdd()" id="cl-add-btn" style="font-size:12px;color:var(--blue);background:none;border:none;cursor:pointer;font-weight:500">+ Add fixed expense</button>
-            <button onclick="resetChecklist()" style="font-size:12px;color:var(--text3);background:none;border:none;cursor:pointer">Reset all</button>
-          </div>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-title">Log new expense</div>
         <div class="ac-wrap" id="ac-wrap">
@@ -472,11 +493,6 @@ input::placeholder{color:var(--text3)}
         <div class="filter-bar">
           <label>Month</label>
           <select id="month-filter" onchange="renderExpenses();updateHeader()"><option value="all">All</option></select>
-        </div>
-        <div style="position:relative;margin-bottom:9px">
-          <input type="text" id="exp-search" placeholder="🔍  Search by description or category..." style="margin-bottom:0;padding-left:12px" oninput="renderExpenses()"/>
-        </div>
-        <div style="display:flex;gap:6px;margin-bottom:9px;overflow-x:auto;padding-bottom:2px" id="cat-filter-chips">
         </div>
         <div class="filter-note" id="filter-note"></div>
         <div id="expense-list"><div class="empty">No expenses yet</div></div>
@@ -575,19 +591,16 @@ let state={
     monthlyRates:{}
   },
   expenses:[],
+  extraFunds:[],
   loans:[],paidLoans:[],
   budgets:{},
   goals:[],
   manualCarryover:0,
-  manualCarryoverMonth:'',
-  credits:[],
-  checklist:[],
   categories:['Food','Transport','Utilities','Rent','Health','Shopping','Education','Entertainment','Fuel','Medical','Clothing','Dining Out']
 };
 let editingIncome=null;
 let acHighlight=-1,bacHighlight=-1;
 let linkedLoanName=null;
-let selectedCatFilter='';
 let pendingExpense=null;
 let editingGoalIdx=null;
 let toastTimer=null;
@@ -599,33 +612,20 @@ function looksLikeLoan(t){const l=t.toLowerCase();return LOAN_KW.some(k=>l.inclu
 function load(){
   try{const s=localStorage.getItem('swf2026v2');if(s){const d=JSON.parse(s);state=Object.assign(state,d);}}catch(e){}
   if(!state.paidLoans)state.paidLoans=[];
+  if(!state.extraFunds)state.extraFunds=[];
   if(!state.budgets)state.budgets={};
   if(!state.goals)state.goals=[];
   if(!state.income.monthlyRates)state.income.monthlyRates={};
   if(!state.manualCarryover)state.manualCarryover=0;
-  if(!state.credits)state.credits=[];
-  if(!state.checklist)state.checklist=[];
   if(!state.income.swiftUsd)state.income.swiftUsd=0;
   if(!state.income.swiftRate)state.income.swiftRate=0;
-
-  const cm=nowIso();
-  if(!state.manualCarryoverMonth)state.manualCarryoverMonth='';
-  if(state.manualCarryover!==0 && state.manualCarryoverMonth && state.manualCarryoverMonth!==cm){
-    state.manualCarryover=0;
-    state.manualCarryoverMonth='';
-    save();
-  }
 
   autoAddRecurring();
   renderAll();
 }
-window.load=load;
 function save(){
-  try{
-    state._savedAt=Date.now();
-    localStorage.setItem('swf2026v2',JSON.stringify(state));
-    if(window.fbSave)window.fbSave(state);
-  }catch(e){}
+  try{localStorage.setItem('swf2026v2',JSON.stringify(state));}catch(e){}
+  if(window._fbSchedulePush) window._fbSchedulePush();
 }
 function fmt(n){return '₨ '+Math.round(n).toLocaleString('en-PK');}
 function fmtUsd(n){return '$ '+n.toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:2});}
@@ -669,7 +669,50 @@ function autoAddRecurring(){
 
 /* ===================== INCOME ===================== */
 function swiftPkr(){return Math.round((state.income.swiftUsd||0)*(state.income.swiftRate||0));}
-function creditsThisMonth(){return (state.credits||[]).filter(c=>c.isoMonth===nowIso()).reduce((a,c)=>a+c.amount,0);}
+
+/* ===================== EXTRA FUNDS / CREDITS ===================== */
+function extraFundsForMonth(m){return (state.extraFunds||[]).filter(f=>f.isoMonth===m).reduce((a,f)=>a+f.amount,0);}
+function totalExtraFunds(){return (state.extraFunds||[]).reduce((a,f)=>a+f.amount,0);}
+
+function addExtraFund(){
+  const desc=(document.getElementById('fund-desc-input').value||'').trim();
+  const amount=parseFloat(document.getElementById('fund-amount-input').value);
+  if(!desc||isNaN(amount)||amount<=0){toast('Enter a description and a valid amount','#A32D2D');return;}
+  const now=new Date();
+  const date=now.toLocaleDateString('en-PK',{day:'numeric',month:'short',year:'numeric'});
+  state.extraFunds.push({desc,amount,date,isoMonth:nowIso(),ts:Date.now()});
+  document.getElementById('fund-desc-input').value='';
+  document.getElementById('fund-amount-input').value='';
+  save();renderAll();
+  toast('Funds added ✓');
+}
+
+function deleteExtraFund(ts){
+  const idx=state.extraFunds.findIndex(f=>f.ts===ts);
+  if(idx<0)return;
+  const removed=state.extraFunds.splice(idx,1)[0];
+  save();renderAll();
+  toastUndo('Credit removed',()=>{state.extraFunds.push(removed);save();renderAll();});
+}
+
+function renderExtraFunds(){
+  const el=document.getElementById('funds-list');
+  if(!el)return;
+  const list=[...(state.extraFunds||[])].sort((a,b)=>b.ts-a.ts);
+  if(!list.length){el.innerHTML='<div class="empty">No extra funds logged yet</div>';}
+  else{
+    el.innerHTML='';
+    list.forEach(f=>{
+      const d=document.createElement('div');d.className='exp-item';
+      d.innerHTML=`<div style="flex:1;min-width:0"><div class="exp-name">${escHtml(f.desc)}</div><div class="exp-cat">${f.date}</div></div>
+      <div style="display:flex;align-items:center;flex-shrink:0"><div class="exp-amount" style="color:var(--green)">+${fmt(f.amount)}</div>
+      <button class="del-btn" onclick="deleteExtraFund(${f.ts})">✕</button></div>`;
+      el.appendChild(d);
+    });
+  }
+  const totEl=document.getElementById('funds-total');
+  if(totEl)totEl.textContent=fmt(totalExtraFunds());
+}
 
 function editIncome(type){
   editingIncome=type;
@@ -971,7 +1014,7 @@ function addGoal(){
 
 function currentMonthlySavings(){
   const cm=nowIso();
-  const ti=state.income.hospital+swiftPkr();
+  const ti=state.income.hospital+swiftPkr()+extraFundsForMonth(cm);
   const te=state.expenses.filter(e=>e.isoMonth===cm).reduce((a,e)=>a+e.amount,0);
   return Math.max(0,ti-te);
 }
@@ -1102,44 +1145,12 @@ function buildMonthOptions(){
 }
 function renderExpenses(){
   const el=document.getElementById('expense-list');
-  const baseFiltered=getFilteredExpenses();
-  const searchVal=(document.getElementById('exp-search')?.value||'').trim().toLowerCase();
+  const filtered=getFilteredExpenses();
   const selVal=document.getElementById('month-filter')?.value||'all';
-
-  // Build category chips from base filtered list
-  const cats=[...new Set(baseFiltered.map(e=>e.category))].sort();
-  const chipsEl=document.getElementById('cat-filter-chips');
-  if(chipsEl){
-    chipsEl.innerHTML='';
-    if(cats.length>1){
-      const allChip=document.createElement('button');
-      allChip.className='cat-chip'+(selectedCatFilter===''?' active':'');
-      allChip.textContent='All';
-      allChip.onclick=()=>{selectedCatFilter='';renderExpenses();};
-      chipsEl.appendChild(allChip);
-      cats.forEach(cat=>{
-        const chip=document.createElement('button');
-        chip.className='cat-chip'+(selectedCatFilter===cat?' active':'');
-        chip.textContent=cat;
-        chip.onclick=()=>{selectedCatFilter=selectedCatFilter===cat?'':cat;renderExpenses();};
-        chipsEl.appendChild(chip);
-      });
-    }
-  }
-
-  // Apply category + search filters
-  let filtered=baseFiltered;
-  if(selectedCatFilter) filtered=filtered.filter(e=>e.category===selectedCatFilter);
-  if(searchVal) filtered=filtered.filter(e=>e.name.toLowerCase().includes(searchVal)||e.category.toLowerCase().includes(searchVal));
-
   document.getElementById('exp-count-badge').textContent=state.expenses.length+' total';
   const noteEl=document.getElementById('filter-note');
-  let note=selVal==='all'?'All '+state.expenses.length+' entries':''+filtered.length+' entries for '+isoToLabel(selVal);
-  if(selectedCatFilter) note+=' · '+selectedCatFilter;
-  if(searchVal) note+=' · matching "'+searchVal+'"';
-  noteEl.textContent=note;
-
-  if(!filtered.length){el.innerHTML='<div class="empty">No expenses match your filter</div>';}
+  noteEl.textContent=selVal==='all'?'Showing all '+state.expenses.length+' entries':'Showing '+filtered.length+' for '+isoToLabel(selVal);
+  if(!filtered.length){el.innerHTML='<div class="empty">No expenses for this period</div>';}
   else{
     el.innerHTML='';
     [...filtered].reverse().forEach(e=>{
@@ -1161,187 +1172,25 @@ function saveManualCarryover(){
   const val=parseFloat(document.getElementById('manual-carryover-input').value);
   if(isNaN(val)){toast('Please enter a valid amount','#A32D2D');return;}
   state.manualCarryover=val;
-  state.manualCarryoverMonth=nowIso();
   save();renderAll();
   toast('Manual carryover saved ✓');
 }
 function clearManualCarryover(){
   state.manualCarryover=0;
-  state.manualCarryoverMonth='';
   document.getElementById('manual-carryover-input').value='';
   save();renderAll();
   toast('Manual carryover cleared');
-}
-
-function addCredit(){
-  const name=(document.getElementById('credit-name').value||'').trim();
-  const amount=parseFloat(document.getElementById('credit-amount').value);
-  if(!name||isNaN(amount)||amount<=0){toast('Please enter a description and amount','#A32D2D');return;}
-  const now=new Date();
-  const isoMonth=nowIso();
-  const date=now.toLocaleDateString('en-PK',{day:'numeric',month:'short',year:'numeric'});
-  state.credits.push({name,amount,date,isoMonth});
-  document.getElementById('credit-name').value='';
-  document.getElementById('credit-amount').value='';
-  save();renderAll();
-  toast('Credit added ✓');
-}
-function deleteCredit(i){
-  state.credits.splice(i,1);
-  save();renderAll();
-  toast('Credit removed');
-}
-function renderCredits(){
-  const el=document.getElementById('credit-list');
-  if(!el)return;
-  const cm=nowIso();
-  const thisMonth=state.credits.filter(c=>c.isoMonth===cm);
-  if(!thisMonth.length){el.innerHTML='<div class="empty">No credits this month</div>';return;}
-  el.innerHTML='';
-  thisMonth.forEach((c,i)=>{
-    const realIdx=state.credits.indexOf(c);
-    const d=document.createElement('div');
-    d.style.cssText='display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)';
-    d.innerHTML=`<div><div style="font-size:14px;font-weight:600">${escHtml(c.name)}</div>
-    <div style="font-size:11px;color:var(--text3)">${c.date}</div></div>
-    <div style="display:flex;align-items:center;gap:8px">
-    <div style="font-size:14px;font-weight:700;color:var(--green)">+${fmt(c.amount)}</div>
-    <button class="del-btn" onclick="deleteCredit(${realIdx})">✕</button></div>`;
-    el.appendChild(d);
-  });
-  const total=thisMonth.reduce((a,c)=>a+c.amount,0);
-  const t=document.createElement('div');
-  t.style.cssText='display:flex;justify-content:space-between;padding:8px 0 0;border-top:1px solid var(--border);margin-top:4px';
-  t.innerHTML=`<span style="font-size:12px;font-weight:600;color:var(--text2)">Total credits this month</span>
-  <span style="font-size:14px;font-weight:700;color:var(--green)">${fmt(total)}</span>`;
-  el.appendChild(t);
-}
-
-/* ===================== CHECKLIST ===================== */
-let checklistOpen=false;
-let checklistAddOpen=false;
-let clCatHighlight=-1;
-
-function toggleChecklist(){
-  checklistOpen=!checklistOpen;
-  document.getElementById('checklist-body').style.display=checklistOpen?'block':'none';
-  document.getElementById('checklist-chevron').style.transform=checklistOpen?'rotate(180deg)':'';
-}
-function toggleChecklistAdd(){
-  checklistAddOpen=!checklistAddOpen;
-  document.getElementById('checklist-add-row').style.display=checklistAddOpen?'block':'none';
-  document.getElementById('cl-add-btn').textContent=checklistAddOpen?'✕ Cancel':'+ Add fixed expense';
-}
-function clCatInput(){
-  const inp=document.getElementById('cl-cat');
-  const list=document.getElementById('cl-cat-list');
-  const q=inp.value.trim().toLowerCase();
-  const opts=state.categories;
-  const matches=q===''?opts:opts.filter(o=>o.toLowerCase().includes(q));
-  clCatHighlight=-1;
-  if(!matches.length){list.classList.remove('open');return;}
-  list.innerHTML='';
-  matches.slice(0,8).forEach(m=>{
-    const d=document.createElement('div');d.className='ac-item';
-    d.innerHTML=`<span style="font-size:13px">🏷️</span><span>${escHtml(m)}</span>`;
-    d.addEventListener('mousedown',e=>{e.preventDefault();document.getElementById('cl-cat').value=m;list.classList.remove('open');});
-    list.appendChild(d);
-  });
-  list.classList.add('open');
-}
-function clCatKey(e){
-  const list=document.getElementById('cl-cat-list');const items=list.querySelectorAll('.ac-item');
-  if(e.key==='ArrowDown'){e.preventDefault();clCatHighlight=Math.min(clCatHighlight+1,items.length-1);items.forEach((it,i)=>it.classList.toggle('highlighted',i===clCatHighlight));}
-  else if(e.key==='ArrowUp'){e.preventDefault();clCatHighlight=Math.max(clCatHighlight-1,0);items.forEach((it,i)=>it.classList.toggle('highlighted',i===clCatHighlight));}
-  else if(e.key==='Enter'&&clCatHighlight>=0){e.preventDefault();document.getElementById('cl-cat').value=items[clCatHighlight].querySelector('span:last-child').textContent;list.classList.remove('open');}
-  else if(e.key==='Escape')list.classList.remove('open');
-}
-function addChecklistItem(){
-  const name=(document.getElementById('cl-name').value||'').trim();
-  const amount=parseFloat(document.getElementById('cl-amount').value);
-  const category=(document.getElementById('cl-cat').value||'').trim()||'General';
-  if(!name||isNaN(amount)||amount<=0){toast('Please enter a name and amount','#A32D2D');return;}
-  state.checklist.push({name,amount,category,checkedMonth:''});
-  document.getElementById('cl-name').value='';
-  document.getElementById('cl-amount').value='';
-  document.getElementById('cl-cat').value='';
-  save();renderChecklist();toast('Fixed expense added ✓');
-}
-function removeChecklistItem(i){
-  state.checklist.splice(i,1);
-  save();renderChecklist();
-}
-function toggleChecklistPay(i){
-  const cm=nowIso();
-  const item=state.checklist[i];
-  if(item.checkedMonth===cm){
-    // Uncheck — remove the expense logged for this item this month
-    const expIdx=state.expenses.findIndex(e=>e.checklistId===i+'_'+cm);
-    if(expIdx>=0){
-      state.expenses.splice(expIdx,1);
-    }
-    item.checkedMonth='';
-    toast('Unmarked — expense removed');
-  }else{
-    // Check — log as expense
-    const now=new Date();
-    const date=now.toLocaleDateString('en-PK',{day:'numeric',month:'short',year:'numeric'});
-    state.expenses.push({
-      category:item.category,
-      name:item.name,
-      amount:item.amount,
-      date,isoMonth:cm,
-      isLoanRepayment:false,
-      recurring:true,
-      checklistId:i+'_'+cm
-    });
-    item.checkedMonth=cm;
-    toast(item.name+' paid ✓ — added to expenses');
-  }
-  save();renderChecklist();buildMonthOptions();updateHeader();renderExpenses();
-}
-function resetChecklist(){
-  const cm=nowIso();
-  state.checklist.forEach(item=>{item.checkedMonth='';});
-  save();renderChecklist();toast('Checklist reset');
-}
-function renderChecklist(){
-  const el=document.getElementById('checklist-items');
-  const emptyEl=document.getElementById('checklist-empty');
-  const badge=document.getElementById('checklist-badge');
-  if(!el)return;
-  const cm=nowIso();
-  if(!state.checklist.length){
-    el.innerHTML='';
-    if(emptyEl)emptyEl.style.display='block';
-    if(badge)badge.textContent='0/0';
-    return;
-  }
-  if(emptyEl)emptyEl.style.display='none';
-  el.innerHTML='';
-  const checked=state.checklist.filter(i=>i.checkedMonth===cm).length;
-  if(badge)badge.textContent=checked+'/'+state.checklist.length;
-  state.checklist.forEach((item,i)=>{
-    const isPaid=item.checkedMonth===cm;
-    const d=document.createElement('div');
-    d.className='cl-item'+(isPaid?' checked':'');
-    d.innerHTML=`<input type="checkbox" ${isPaid?'checked':''} onchange="toggleChecklistPay(${i})"/>
-    <div class="cl-item-name">${escHtml(item.name)}<span style="font-size:10px;color:var(--text3);margin-left:5px">${escHtml(item.category)}</span></div>
-    <div class="cl-item-amount">${fmt(item.amount)}</div>
-    <button onclick="removeChecklistItem(${i})" style="background:none;border:none;color:var(--text3);font-size:14px;cursor:pointer;padding:0;flex-shrink:0">✕</button>`;
-    el.appendChild(d);
-  });
 }
 
 /* ===================== CARRYOVER ===================== */
 function calcCarryover(){
 
   const cm=nowIso();
-  const months=[...new Set(state.expenses.map(e=>e.isoMonth).concat(Object.keys(state.income.monthlyRates||{})))].filter(m=>m&&m<cm).sort();
+  const months=[...new Set(state.expenses.map(e=>e.isoMonth).concat(Object.keys(state.income.monthlyRates||{})).concat((state.extraFunds||[]).map(f=>f.isoMonth)))].filter(m=>m&&m<cm).sort();
   let total=0;
   months.forEach(m=>{
     const r=state.income.monthlyRates?.[m];
-    const inc=r?(r.hospital||0)+(r.pkr||0):0;
+    const inc=(r?(r.hospital||0)+(r.pkr||0):0)+extraFundsForMonth(m);
     const spent=state.expenses.filter(e=>e.isoMonth===m).reduce((a,e)=>a+e.amount,0);
     const leftover=inc-spent;
     total+=leftover;
@@ -1352,7 +1201,7 @@ function calcCarryover(){
 /* ===================== HEADER ===================== */
 function updateHeader(){
   const cm=nowIso();
-  const ti=state.income.hospital+swiftPkr()+creditsThisMonth();
+  const ti=state.income.hospital+swiftPkr()+extraFundsForMonth(cm);
   const tl=state.loans.reduce((a,l)=>a+l.remaining,0);
   const filtered=getFilteredExpenses();
   const te=filtered.reduce((a,e)=>a+e.amount,0);
@@ -1411,7 +1260,7 @@ function updateHeader(){
 }
 
 function renderAll(){
-  buildMonthOptions();updateHeader();renderExpenses();renderLoans();renderBudget();renderGoals();renderIncomeHistory();renderCredits();renderChecklist();
+  buildMonthOptions();updateHeader();renderExpenses();renderLoans();renderBudget();renderGoals();renderIncomeHistory();renderExtraFunds();
 }
 
 function switchTab(t,btn){
